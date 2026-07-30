@@ -1,0 +1,11 @@
+MCP (Model Context Protocol) server for OPNsense.
+
+Runs natively on the firewall as an OPNsense plugin, exposing read-only
+inspection tools (interfaces, firewall rules, ARP, routes, services, VLANs,
+DHCP leases, WireGuard, HAProxy) that AI assistants query through typed MCP
+tool calls instead of screen-scraping the web UI or hand-writing API scripts.
+
+Read-only by design — no write tools exist. Auth via bearer token, managed
+through the OPNsense web UI under Services > MCP Server.
+
+WWW: https://github.com/JamesonRGrieve/opnsense-mcp

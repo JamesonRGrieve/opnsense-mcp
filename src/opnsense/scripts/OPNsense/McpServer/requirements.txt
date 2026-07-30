@@ -1,0 +1,2 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+mcp>=1.9.3,<2.0.0

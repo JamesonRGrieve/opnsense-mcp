@@ -1,0 +1,31 @@
+<model>
+    <mount>//OPNsense/mcpserver/general</mount>
+    <description>MCP Server configuration</description>
+    <version>1.0.0</version>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <listen_address type="NetworkField">
+            <Default>127.0.0.1</Default>
+            <Required>Y</Required>
+        </listen_address>
+        <listen_port type="PortField">
+            <Default>8500</Default>
+            <Required>Y</Required>
+        </listen_port>
+        <auth_token type="TextField">
+            <Required>N</Required>
+            <Mask>/^[A-Za-z0-9_\-]{32,128}$/</Mask>
+        </auth_token>
+        <transport type="OptionField">
+            <Default>http</Default>
+            <Required>Y</Required>
+            <OptionValues>
+                <http>HTTP (Streamable)</http>
+                <stdio>stdio</stdio>
+            </OptionValues>
+        </transport>
+    </items>
+</model>

@@ -1,0 +1,9 @@
+<acl>
+    <page-services-mcpserver>
+        <name>Services: MCP Server</name>
+        <patterns>
+            <pattern>ui/mcpserver/*</pattern>
+            <pattern>api/mcpserver/*</pattern>
+        </patterns>
+    </page-services-mcpserver>
+</acl>

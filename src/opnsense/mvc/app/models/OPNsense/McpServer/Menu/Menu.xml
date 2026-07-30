@@ -1,0 +1,7 @@
+<menu>
+    <Services>
+        <McpServer cssClass="fa fa-plug">
+            <General url="/ui/mcpserver/general/index"/>
+        </McpServer>
+    </Services>
+</menu>

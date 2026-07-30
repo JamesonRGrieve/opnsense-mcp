@@ -1,0 +1,32 @@
+<form>
+    <field>
+        <id>general.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Enable the MCP server daemon.</help>
+    </field>
+    <field>
+        <id>general.listen_address</id>
+        <label>Listen Address</label>
+        <type>text</type>
+        <help>IP address to bind the MCP HTTP listener to. Use 0.0.0.0 for all interfaces (not recommended — prefer the management address).</help>
+    </field>
+    <field>
+        <id>general.listen_port</id>
+        <label>Listen Port</label>
+        <type>text</type>
+        <help>TCP port for the MCP HTTP listener.</help>
+    </field>
+    <field>
+        <id>general.transport</id>
+        <label>Transport</label>
+        <type>dropdown</type>
+        <help>MCP transport mode. HTTP for network clients (Claude Code via mcp-remote); stdio for local pipe.</help>
+    </field>
+    <field>
+        <id>general.auth_token</id>
+        <label>Auth Token</label>
+        <type>text</type>
+        <help>Bearer token that MCP clients must present. Auto-generated on first enable if left blank. Clients connect with header "Authorization: Bearer &lt;token&gt;".</help>
+    </field>
+</form>

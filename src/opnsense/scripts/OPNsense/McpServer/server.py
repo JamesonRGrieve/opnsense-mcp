@@ -326,9 +326,72 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
                     cols.append(k)
         return "installed: true\n" + toon_table("tunnels", tunnels, cols)
 
+    def _parse_haproxy_xml(section: str) -> list[dict[str, str]]:
+        """Parse HAProxy config.xml elements, filtering empty/default fields."""
+        items = []
+        try:
+            tree = ET.parse(CONFIG_FILE)
+            for el in tree.findall(f".//OPNsense/HAProxy/{section}/*"):
+                entry = {}
+                for child in el:
+                    val = (child.text or "").strip()
+                    if val and val != "0" and val != "unspecified":
+                        entry[child.tag] = val
+                if entry:
+                    items.append(entry)
+        except (ET.ParseError, FileNotFoundError):
+            pass
+        return items
+
     @mcp.tool()
-    async def get_haproxy_status() -> str:
-        """HAProxy stats: frontends, backends, servers. TOON format."""
+    async def get_haproxy_config(section: str = "all") -> str:
+        """HAProxy configuration from config.xml (pending/declared state). TOON format.
+
+        Shows the declared config — frontends, backends, servers, ACLs, actions.
+        This is what WILL be applied on next HAProxy reload. Compare with
+        get_haproxy_status to see what is CURRENTLY running.
+
+        Args:
+            section: Which config section to return. One of: "all", "frontends",
+                     "backends", "servers", "acls", "actions", "healthchecks"
+        """
+        sections = {
+            "frontends": ["name", "enabled", "bind", "mode", "defaultBackend", "ssl_enabled", "ssl_certificates", "http2Enabled", "linkedActions", "description"],
+            "backends": ["name", "enabled", "mode", "algorithm", "linkedServers", "healthCheckEnabled", "healthCheck", "http2Enabled", "persistence", "description"],
+            "servers": ["name", "enabled", "address", "port", "checkport", "mode", "ssl", "weight", "description"],
+            "acls": ["name", "expression", "negate", "hdr_beg", "hdr_end", "hdr", "hdr_reg", "path_beg", "path_end", "path", "path_reg", "ssl_fc_sni", "ssl_sni", "custom_acl", "value", "description"],
+            "actions": ["name", "enabled", "testType", "linkedAcls", "operator", "type", "use_backend", "http_request_action", "http_request_option", "http_response_action", "http_response_option", "description"],
+            "healthchecks": ["name", "type", "interval", "checkport", "description"],
+        }
+        if section != "all" and section not in sections:
+            return f"error: unknown section '{section}'. Valid: all, {', '.join(sections)}"
+        parts = []
+        targets = sections if section == "all" else {section: sections[section]}
+        for sec_name, cols in targets.items():
+            items = _parse_haproxy_xml(sec_name)
+            if not items:
+                parts.append(f"{sec_name}: []")
+                continue
+            present_cols = [c for c in cols if any(c in item for item in items)]
+            if not present_cols:
+                present_cols = sorted({k for item in items for k in item})[:10]
+            parts.append(toon_table(sec_name, items, present_cols))
+        return "\n".join(parts)
+
+    @mcp.tool()
+    async def get_haproxy_status(source: str = "applied") -> str:
+        """HAProxy runtime status from the stats socket. TOON format.
+
+        Shows what is CURRENTLY running — live session counts, server health,
+        bytes transferred. Compare with get_haproxy_config to see pending changes.
+
+        Args:
+            source: "applied" (default) for live stats from the running HAProxy,
+                    "pending" for declared config from config.xml (alias for
+                    get_haproxy_config), "both" for side-by-side.
+        """
+        if source == "pending":
+            return await get_haproxy_config()
         stats_socket = "/var/run/haproxy.socket"
         if not os.path.exists(stats_socket):
             return "installed: false\nnote: HAProxy not available"
@@ -364,7 +427,11 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
             toon_table("backends", backends, be_cols),
             toon_table("servers", servers, sv_cols),
         ]
-        return "\n".join(parts)
+        applied = "\n".join(parts)
+        if source == "both":
+            pending = await get_haproxy_config()
+            return f"# === APPLIED (running) ===\n{applied}\n\n# === PENDING (config.xml) ===\n{pending}"
+        return applied
 
     @mcp.tool()
     async def get_unbound_status() -> str:

@@ -287,30 +287,30 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
         return {"installed": True, "tunnels": tunnels}
 
     @mcp.tool()
-    async def get_haproxy_status() -> dict[str, Any]:
-        """HAProxy stats: frontends, backends, and servers with status, sessions, and bytes.
+    async def get_haproxy_status() -> str:
+        """HAProxy stats in TOON (Token-Optimized Object Notation) format.
 
-        Queries the HAProxy stats socket directly. Returns structured data per
-        proxy (frontend/backend/server) including status (UP/DOWN/OPEN), current
-        and max sessions, bytes in/out, request/response rates, and health check
-        results. Returns installed=False if os-haproxy is not present.
+        Queries the HAProxy stats socket. Returns frontends, backends, and
+        servers with key fields: status (UP/DOWN/OPEN), current/max sessions,
+        total sessions, bytes in/out, request rate, and health check status.
         """
         stats_socket = "/var/run/haproxy.socket"
         if not os.path.exists(stats_socket):
-            return {"installed": False, "note": "HAProxy not available"}
+            return "installed: false\nnote: HAProxy not available"
         raw = run_cmd(
             ["sh", "-c", f"echo 'show stat' | socat - UNIX-CONNECT:{stats_socket}"],
             timeout=5,
         )
         if raw.startswith("error:") or not raw.strip():
-            return {"installed": True, "error": raw.strip() or "empty response"}
-        lines = [l for l in raw.strip().splitlines() if l and not l.startswith("#")]
-        header_line = raw.strip().splitlines()[0]
+            return f"installed: true\nerror: {raw.strip() or 'empty response'}"
+        all_lines = raw.strip().splitlines()
+        header_line = all_lines[0]
         if header_line.startswith("# "):
             header_line = header_line[2:]
         fields = [f.strip() for f in header_line.split(",")]
+        data_lines = [l for l in all_lines[1:] if l.strip()]
         proxies: list[dict[str, str]] = []
-        for line in lines:
+        for line in data_lines:
             vals = line.split(",")
             entry = {}
             for i, f in enumerate(fields):
@@ -320,12 +320,22 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
         frontends = [p for p in proxies if p.get("svname") == "FRONTEND"]
         backends = [p for p in proxies if p.get("svname") == "BACKEND"]
         servers = [p for p in proxies if p.get("svname") not in ("FRONTEND", "BACKEND", "")]
-        return {
-            "installed": True,
-            "frontends": frontends,
-            "backends": backends,
-            "servers": servers,
-        }
+        fe_cols = ["pxname", "status", "scur", "smax", "stot", "bin", "bout", "rate", "slim"]
+        be_cols = ["pxname", "status", "scur", "smax", "stot", "bin", "bout", "act", "bck", "lastchg"]
+        sv_cols = ["pxname", "svname", "status", "scur", "smax", "stot", "bin", "bout", "check_status", "lastchg"]
+        def toon_table(name: str, rows: list[dict[str, str]], cols: list[str]) -> str:
+            if not rows:
+                return f"{name}: []"
+            hdr = f"{name}[{len(rows)}]{{{','.join(cols)}}}:"
+            body = "\n".join("  " + ",".join(r.get(c, "") for c in cols) for r in rows)
+            return f"{hdr}\n{body}"
+        parts = [
+            "installed: true",
+            toon_table("frontends", frontends, fe_cols),
+            toon_table("backends", backends, be_cols),
+            toon_table("servers", servers, sv_cols),
+        ]
+        return "\n".join(parts)
 
     @mcp.tool()
     async def get_unbound_status() -> dict[str, Any]:

@@ -347,35 +347,33 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
     async def get_haproxy_config(section: str = "all") -> str:
         """HAProxy configuration from config.xml (pending/declared state). TOON format.
 
-        Shows the declared config — frontends, backends, servers, ACLs, actions.
-        This is what WILL be applied on next HAProxy reload. Compare with
-        get_haproxy_status to see what is CURRENTLY running.
+        Returns ALL non-empty fields for every element — full SSL config,
+        stickiness, tuning, logging, custom options, linked UUIDs, etc.
+        Empty/default-zero fields are filtered out to keep output compact.
 
         Args:
             section: Which config section to return. One of: "all", "frontends",
                      "backends", "servers", "acls", "actions", "healthchecks"
         """
-        sections = {
-            "frontends": ["name", "enabled", "bind", "mode", "defaultBackend", "ssl_enabled", "ssl_certificates", "http2Enabled", "linkedActions", "description"],
-            "backends": ["name", "enabled", "mode", "algorithm", "linkedServers", "healthCheckEnabled", "healthCheck", "http2Enabled", "persistence", "description"],
-            "servers": ["name", "enabled", "address", "port", "checkport", "mode", "ssl", "weight", "description"],
-            "acls": ["name", "expression", "negate", "hdr_beg", "hdr_end", "hdr", "hdr_reg", "path_beg", "path_end", "path", "path_reg", "ssl_fc_sni", "ssl_sni", "custom_acl", "value", "description"],
-            "actions": ["name", "enabled", "testType", "linkedAcls", "operator", "type", "use_backend", "http_request_action", "http_request_option", "http_response_action", "http_response_option", "description"],
-            "healthchecks": ["name", "type", "interval", "checkport", "description"],
-        }
-        if section != "all" and section not in sections:
-            return f"error: unknown section '{section}'. Valid: all, {', '.join(sections)}"
+        valid = ["frontends", "backends", "servers", "acls", "actions", "healthchecks"]
+        if section != "all" and section not in valid:
+            return f"error: unknown section '{section}'. Valid: all, {', '.join(valid)}"
+        targets = valid if section == "all" else [section]
         parts = []
-        targets = sections if section == "all" else {section: sections[section]}
-        for sec_name, cols in targets.items():
+        for sec_name in targets:
             items = _parse_haproxy_xml(sec_name)
             if not items:
                 parts.append(f"{sec_name}: []")
                 continue
-            present_cols = [c for c in cols if any(c in item for item in items)]
-            if not present_cols:
-                present_cols = sorted({k for item in items for k in item})[:10]
-            parts.append(toon_table(sec_name, items, present_cols))
+            cols: list[str] = []
+            for item in items:
+                for k in item:
+                    if k not in cols:
+                        cols.append(k)
+            if "name" in cols:
+                cols.remove("name")
+                cols.insert(0, "name")
+            parts.append(toon_table(sec_name, items, cols))
         return "\n".join(parts)
 
     @mcp.tool()

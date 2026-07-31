@@ -348,6 +348,8 @@ def cmd_start():
     daemonize()
     server = create_server(cfg)
     transport = cfg.get("transport", "http")
+    if transport == "http":
+        transport = "streamable-http"
     server.run(transport=transport)
 
 

@@ -288,13 +288,44 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
 
     @mcp.tool()
     async def get_haproxy_status() -> dict[str, Any]:
-        """HAProxy backend/frontend status. Returns empty if os-haproxy is not installed."""
+        """HAProxy stats: frontends, backends, and servers with status, sessions, and bytes.
+
+        Queries the HAProxy stats socket directly. Returns structured data per
+        proxy (frontend/backend/server) including status (UP/DOWN/OPEN), current
+        and max sessions, bytes in/out, request/response rates, and health check
+        results. Returns installed=False if os-haproxy is not present.
+        """
         stats_socket = "/var/run/haproxy.socket"
         if not os.path.exists(stats_socket):
             return {"installed": False, "note": "HAProxy not available"}
-        raw = run_cmd(["socat", f"UNIX-CONNECT:{stats_socket}", "STDIN"],
-                      timeout=5)
-        return {"installed": True, "raw_stats": raw[:4096]}
+        raw = run_cmd(
+            ["sh", "-c", f"echo 'show stat' | socat - UNIX-CONNECT:{stats_socket}"],
+            timeout=5,
+        )
+        if raw.startswith("error:") or not raw.strip():
+            return {"installed": True, "error": raw.strip() or "empty response"}
+        lines = [l for l in raw.strip().splitlines() if l and not l.startswith("#")]
+        header_line = raw.strip().splitlines()[0]
+        if header_line.startswith("# "):
+            header_line = header_line[2:]
+        fields = [f.strip() for f in header_line.split(",")]
+        proxies: list[dict[str, str]] = []
+        for line in lines:
+            vals = line.split(",")
+            entry = {}
+            for i, f in enumerate(fields):
+                if i < len(vals) and f:
+                    entry[f] = vals[i]
+            proxies.append(entry)
+        frontends = [p for p in proxies if p.get("svname") == "FRONTEND"]
+        backends = [p for p in proxies if p.get("svname") == "BACKEND"]
+        servers = [p for p in proxies if p.get("svname") not in ("FRONTEND", "BACKEND", "")]
+        return {
+            "installed": True,
+            "frontends": frontends,
+            "backends": backends,
+            "servers": servers,
+        }
 
     @mcp.tool()
     async def get_unbound_status() -> dict[str, Any]:

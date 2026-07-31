@@ -7,6 +7,9 @@ Runs on the firewall itself as a configd-managed daemon, reading local state
 directly (config.xml, ifconfig, pfctl, arp, netstat, lease files) instead of
 calling its own REST API. Read-only by design: no write tools exist.
 
+All tools return TOON (Token-Optimized Object Notation) for compact,
+token-efficient LLM consumption.
+
 Daemon lifecycle (start/stop/restart/status) is driven by configd actions and
 the OPNsense ServiceController; this script handles the PID file and
 daemonization when called with those verbs.
@@ -48,6 +51,29 @@ def run_cmd(cmd: list[str], timeout: int = 10) -> str:
         return f"error: {e}"
 
 
+def toon_table(name: str, rows: list[dict[str, str]], cols: list[str]) -> str:
+    """Render a list of dicts as a TOON tabular array."""
+    if not rows:
+        return f"{name}: []"
+    hdr = f"{name}[{len(rows)}]{{{','.join(cols)}}}:"
+    body = "\n".join("  " + ",".join(_toon_val(r.get(c, "")) for c in cols) for r in rows)
+    return f"{hdr}\n{body}"
+
+
+def _toon_val(v: str) -> str:
+    """Quote a TOON value if it contains commas or is ambiguous."""
+    if not v:
+        return '""'
+    if "," in v or ":" in v or '"' in v or v in ("true", "false", "null") or v.startswith("-") or v.startswith("#"):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+    return v
+
+
+def toon_kv(pairs: list[tuple[str, str]]) -> str:
+    """Render key-value pairs as TOON object fields."""
+    return "\n".join(f"{k}: {_toon_val(v)}" for k, v in pairs)
+
+
 def parse_ifconfig(raw: str) -> list[dict[str, Any]]:
     """Parse ifconfig -a output into structured interface records."""
     interfaces = []
@@ -58,18 +84,17 @@ def parse_ifconfig(raw: str) -> list[dict[str, Any]]:
                 interfaces.append(current)
             name = line.split(":")[0]
             flags_part = line.split("<")[1].split(">")[0] if "<" in line else ""
-            current = {"name": name, "flags": flags_part, "addresses": [], "status": ""}
+            current = {"name": name, "flags": flags_part, "addresses": [], "status": "", "mac": "", "media": ""}
         elif current and line.strip():
             parts = line.strip()
             if parts.startswith("inet "):
                 tokens = parts.split()
-                addr = {"family": "inet", "address": tokens[1]}
+                addr = tokens[1]
                 if "netmask" in tokens:
-                    addr["netmask"] = tokens[tokens.index("netmask") + 1]
+                    addr += "/" + tokens[tokens.index("netmask") + 1]
                 current["addresses"].append(addr)
             elif parts.startswith("inet6 "):
-                tokens = parts.split()
-                current["addresses"].append({"family": "inet6", "address": tokens[1]})
+                current["addresses"].append(parts.split()[1])
             elif parts.startswith("ether "):
                 current["mac"] = parts.split()[1]
             elif parts.startswith("status:"):
@@ -122,7 +147,7 @@ def parse_pfctl_rules(raw: str) -> list[dict[str, str]]:
     for i, line in enumerate(raw.splitlines()):
         line = line.strip()
         if line and not line.startswith("#"):
-            rules.append({"index": i, "rule": line})
+            rules.append({"index": str(i), "rule": line})
     return rules
 
 
@@ -154,25 +179,6 @@ def parse_dhcp_leases(path: str) -> list[dict[str, str]]:
     return leases
 
 
-def parse_fw_rules_xml(config_path: str) -> list[dict[str, str]]:
-    """Parse firewall filter rules from config.xml for structured output."""
-    rules = []
-    try:
-        tree = ET.parse(config_path)
-        for rule in tree.findall(".//filter/rule"):
-            entry: dict[str, str] = {}
-            for child in rule:
-                if child.tag in ("source", "destination"):
-                    sub = {f"{child.tag}_{sc.tag}": (sc.text or "") for sc in child}
-                    entry.update(sub)
-                else:
-                    entry[child.tag] = child.text or ""
-            rules.append(entry)
-    except (ET.ParseError, FileNotFoundError):
-        pass
-    return rules
-
-
 def create_server(cfg: dict[str, str]) -> FastMCP:
     """Create and configure the MCP server with read-only tools."""
     host = cfg.get("listen_address", "127.0.0.1")
@@ -180,8 +186,8 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
     mcp = FastMCP("opnsense", host=host, port=port)
 
     @mcp.tool()
-    async def get_system_info() -> dict[str, Any]:
-        """System information: hostname, version, uptime, architecture."""
+    async def get_system_info() -> str:
+        """System information: hostname, version, uptime, architecture. TOON format."""
         uname = run_cmd(["uname", "-srm"])
         hostname = run_cmd(["hostname"]).strip()
         uptime = run_cmd(["uptime"]).strip()
@@ -191,66 +197,89 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
                 version = f.read().strip()
         except FileNotFoundError:
             version = "unknown"
-        return {
-            "hostname": hostname,
-            "version": version,
-            "uname": uname.strip(),
-            "uptime": uptime,
-        }
+        return toon_kv([
+            ("hostname", hostname),
+            ("version", version),
+            ("uname", uname.strip()),
+            ("uptime", uptime),
+        ])
 
     @mcp.tool()
-    async def get_interfaces() -> list[dict[str, Any]]:
-        """All network interfaces with addresses, status, MAC, and media."""
-        return parse_ifconfig(run_cmd(["ifconfig", "-a"]))
+    async def get_interfaces() -> str:
+        """Network interfaces with addresses, status, MAC, and media. TOON format."""
+        ifaces = parse_ifconfig(run_cmd(["ifconfig", "-a"]))
+        lines = []
+        for iface in ifaces:
+            addrs = " ".join(iface.get("addresses", []))
+            lines.append({
+                "name": iface.get("name", ""),
+                "status": iface.get("status", ""),
+                "mac": iface.get("mac", ""),
+                "addresses": addrs,
+                "flags": iface.get("flags", ""),
+            })
+        return toon_table("interfaces", lines, ["name", "status", "mac", "addresses", "flags"])
 
     @mcp.tool()
-    async def get_firewall_rules() -> dict[str, Any]:
-        """Active pf firewall rules (pfctl -sr) and config.xml filter rules."""
-        return {
-            "active_rules": parse_pfctl_rules(run_cmd(["pfctl", "-sr"])),
-            "configured_rules": parse_fw_rules_xml(CONFIG_FILE),
-        }
+    async def get_firewall_rules() -> str:
+        """Active pf firewall rules (pfctl -sr). TOON format."""
+        rules = parse_pfctl_rules(run_cmd(["pfctl", "-sr"]))
+        return toon_table("rules", rules, ["index", "rule"])
 
     @mcp.tool()
-    async def get_arp_table() -> list[dict[str, str]]:
-        """ARP table: IP-to-MAC mappings and their interfaces."""
-        return parse_arp(run_cmd(["arp", "-an"]))
+    async def get_arp_table() -> str:
+        """ARP table: IP-to-MAC mappings and their interfaces. TOON format."""
+        entries = parse_arp(run_cmd(["arp", "-an"]))
+        return toon_table("arp", entries, ["ip", "mac", "interface"])
 
     @mcp.tool()
-    async def get_routes() -> list[dict[str, str]]:
-        """Routing table (IPv4 and IPv6)."""
-        return parse_routes(run_cmd(["netstat", "-rn"]))
+    async def get_routes() -> str:
+        """Routing table (IPv4 and IPv6). TOON format."""
+        routes = parse_routes(run_cmd(["netstat", "-rn"]))
+        return toon_table("routes", routes, ["destination", "gateway", "flags", "interface"])
 
     @mcp.tool()
-    async def get_services() -> dict[str, Any]:
-        """OPNsense service status list via pluginctl."""
+    async def get_services() -> str:
+        """OPNsense service status list via pluginctl. TOON format."""
         raw = run_cmd(["/usr/local/sbin/pluginctl", "-s"])
         services = []
         for line in raw.strip().splitlines():
             parts = line.split()
             if len(parts) >= 2:
                 services.append({"name": parts[0], "status": parts[1]})
-        return {"services": services}
+        return toon_table("services", services, ["name", "status"])
 
     @mcp.tool()
-    async def get_nat_rules() -> dict[str, str]:
-        """NAT rules from config.xml (outbound and inbound)."""
-        rules: dict[str, Any] = {"outbound": [], "inbound": []}
+    async def get_nat_rules() -> str:
+        """NAT rules from config.xml (outbound and inbound). TOON format."""
+        parts = []
         try:
             tree = ET.parse(CONFIG_FILE)
+            outbound = []
             for rule in tree.findall(".//nat/outbound/rule"):
                 entry = {child.tag: (child.text or "") for child in rule}
-                rules["outbound"].append(entry)
+                outbound.append(entry)
+            if outbound:
+                out_cols = sorted({k for e in outbound for k in e})
+                parts.append(toon_table("outbound", outbound, out_cols))
+            else:
+                parts.append("outbound: []")
+            inbound = []
             for rule in tree.findall(".//nat/rule"):
                 entry = {child.tag: (child.text or "") for child in rule}
-                rules["inbound"].append(entry)
+                inbound.append(entry)
+            if inbound:
+                in_cols = sorted({k for e in inbound for k in e})
+                parts.append(toon_table("inbound", inbound, in_cols))
+            else:
+                parts.append("inbound: []")
         except (ET.ParseError, FileNotFoundError):
-            pass
-        return rules
+            parts.append("error: could not parse config.xml")
+        return "\n".join(parts)
 
     @mcp.tool()
-    async def get_vlans() -> dict[str, Any]:
-        """VLAN assignments from config.xml."""
+    async def get_vlans() -> str:
+        """VLAN assignments from config.xml. TOON format."""
         vlans = []
         try:
             tree = ET.parse(CONFIG_FILE)
@@ -259,19 +288,23 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
                 vlans.append(entry)
         except (ET.ParseError, FileNotFoundError):
             pass
-        return {"vlans": vlans}
+        if not vlans:
+            return "vlans: []"
+        cols = sorted({k for e in vlans for k in e})
+        return toon_table("vlans", vlans, cols)
 
     @mcp.tool()
-    async def get_dhcp_leases() -> list[dict[str, str]]:
-        """Active DHCP leases from the ISC dhcpd lease file."""
-        return parse_dhcp_leases(DHCP_LEASE_FILE)
+    async def get_dhcp_leases() -> str:
+        """Active DHCP leases from the ISC dhcpd lease file. TOON format."""
+        leases = parse_dhcp_leases(DHCP_LEASE_FILE)
+        return toon_table("leases", leases, ["ip", "mac", "hostname", "state", "starts", "ends"])
 
     @mcp.tool()
-    async def get_wireguard_status() -> dict[str, Any]:
-        """WireGuard tunnel status. Returns empty if WireGuard is not installed."""
+    async def get_wireguard_status() -> str:
+        """WireGuard tunnel status. TOON format."""
         raw = run_cmd(["wg", "show", "all"])
         if raw.startswith("error:"):
-            return {"installed": False, "note": "WireGuard not available"}
+            return "installed: false\nnote: WireGuard not available"
         tunnels: list[dict[str, str]] = []
         current: dict[str, str] = {}
         for line in raw.splitlines():
@@ -281,19 +314,21 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
                 current = {"interface": line.split(":", 1)[1].strip()}
             elif ":" in line and current:
                 k, v = line.split(":", 1)
-                current[k.strip()] = v.strip()
+                current[k.strip().replace(" ", "_")] = v.strip()
         if current:
             tunnels.append(current)
-        return {"installed": True, "tunnels": tunnels}
+        if not tunnels:
+            return "installed: true\ntunnels: []"
+        cols = []
+        for t in tunnels:
+            for k in t:
+                if k not in cols:
+                    cols.append(k)
+        return "installed: true\n" + toon_table("tunnels", tunnels, cols)
 
     @mcp.tool()
     async def get_haproxy_status() -> str:
-        """HAProxy stats in TOON (Token-Optimized Object Notation) format.
-
-        Queries the HAProxy stats socket. Returns frontends, backends, and
-        servers with key fields: status (UP/DOWN/OPEN), current/max sessions,
-        total sessions, bytes in/out, request rate, and health check status.
-        """
+        """HAProxy stats: frontends, backends, servers. TOON format."""
         stats_socket = "/var/run/haproxy.socket"
         if not os.path.exists(stats_socket):
             return "installed: false\nnote: HAProxy not available"
@@ -323,12 +358,6 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
         fe_cols = ["pxname", "status", "scur", "smax", "stot", "bin", "bout", "rate", "slim"]
         be_cols = ["pxname", "status", "scur", "smax", "stot", "bin", "bout", "act", "bck", "lastchg"]
         sv_cols = ["pxname", "svname", "status", "scur", "smax", "stot", "bin", "bout", "check_status", "lastchg"]
-        def toon_table(name: str, rows: list[dict[str, str]], cols: list[str]) -> str:
-            if not rows:
-                return f"{name}: []"
-            hdr = f"{name}[{len(rows)}]{{{','.join(cols)}}}:"
-            body = "\n".join("  " + ",".join(r.get(c, "") for c in cols) for r in rows)
-            return f"{hdr}\n{body}"
         parts = [
             "installed: true",
             toon_table("frontends", frontends, fe_cols),
@@ -338,17 +367,17 @@ def create_server(cfg: dict[str, str]) -> FastMCP:
         return "\n".join(parts)
 
     @mcp.tool()
-    async def get_unbound_status() -> dict[str, Any]:
-        """Unbound DNS resolver statistics. Returns empty if not running."""
+    async def get_unbound_status() -> str:
+        """Unbound DNS resolver statistics. TOON format."""
         raw = run_cmd(["unbound-control", "stats_noreset"])
         if raw.startswith("error:"):
-            return {"running": False}
-        stats: dict[str, str] = {}
+            return "running: false"
+        pairs = [("running", "true")]
         for line in raw.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
-                stats[k.strip()] = v.strip()
-        return {"running": True, "stats": stats}
+                pairs.append((k.strip(), v.strip()))
+        return toon_kv(pairs)
 
     return mcp
 

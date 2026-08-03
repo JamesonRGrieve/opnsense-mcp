@@ -22,7 +22,7 @@ import sys
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 PID_FILE = "/var/run/mcpserver.pid"
 CONFIG_FILE = "/conf/config.xml"
@@ -179,11 +179,11 @@ def parse_dhcp_leases(path: str) -> list[dict[str, str]]:
     return leases
 
 
-def create_server(cfg: dict[str, str]) -> FastMCP:
+def create_server(cfg: dict[str, str]) -> MCPServer:
     """Create and configure the MCP server with read-only tools."""
     host = cfg.get("listen_address", "127.0.0.1")
     port = int(cfg.get("listen_port", "8500"))
-    mcp = FastMCP("opnsense", host=host, port=port)
+    mcp = MCPServer("opnsense", host=host, port=port)
 
     @mcp.tool()
     async def get_system_info() -> str:

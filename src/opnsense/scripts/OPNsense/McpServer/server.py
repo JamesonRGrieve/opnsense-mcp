@@ -179,11 +179,11 @@ def parse_dhcp_leases(path: str) -> list[dict[str, str]]:
     return leases
 
 
-def create_server(cfg: dict[str, str]) -> MCPServer:
+def create_server(cfg: dict[str, str]) -> tuple[MCPServer, str, int]:
     """Create and configure the MCP server with read-only tools."""
     host = cfg.get("listen_address", "127.0.0.1")
     port = int(cfg.get("listen_port", "8500"))
-    mcp = MCPServer("opnsense", host=host, port=port)
+    mcp = MCPServer("opnsense")
 
     @mcp.tool()
     async def get_system_info() -> str:
@@ -444,7 +444,7 @@ def create_server(cfg: dict[str, str]) -> MCPServer:
                 pairs.append((k.strip(), v.strip()))
         return toon_kv(pairs)
 
-    return mcp
+    return mcp, host, port
 
 
 def daemonize():
@@ -481,11 +481,11 @@ def cmd_start():
         print("not enabled")
         return
     daemonize()
-    server = create_server(cfg)
+    server, host, port = create_server(cfg)
     transport = cfg.get("transport", "http")
     if transport == "http":
         transport = "streamable-http"
-    server.run(transport=transport)
+    server.run(transport=transport, host=host, port=port)
 
 
 def cmd_stop():

@@ -22,10 +22,7 @@ import sys
 import xml.etree.ElementTree as ET
 from typing import Any
 
-try:
-    from mcp.server import MCPServer
-except ImportError:
-    from mcp.server.fastmcp import FastMCP as MCPServer
+from mcp.server import MCPServer
 
 PID_FILE = "/var/run/mcpserver.pid"
 CONFIG_FILE = "/conf/config.xml"
